@@ -92,7 +92,7 @@ let get_class_name_method_call_from_clang tenv obj_c_message_expr_info =
       None
 
 
-(* Get class name from a method call accorsing to the info given by the receiver kind  *)
+(* Get class name from a method call according to the info given by the receiver kind  *)
 let get_class_name_method_call_from_receiver_kind context obj_c_message_expr_info act_params =
   match obj_c_message_expr_info.Clang_ast_t.omei_receiver_kind with
   | `Class qt ->
@@ -311,7 +311,7 @@ let create_external_procdesc trans_unit_ctx cfg proc_name clang_method_kind type
       | Some (ret_type, arg_types) ->
           (ret_type, List.map ~f:(fun typ -> (Mangled.from_string "x", typ)) arg_types)
       | None ->
-          (Typ.void, [])
+          (StdTyp.void, [])
     in
     let proc_attributes =
       { (ProcAttributes.default trans_unit_ctx.CFrontend_config.source_file proc_name) with

@@ -107,7 +107,9 @@ and name =
      "MyClass<int>", "InnerClass" *)
   | CppClass of QualifiedCppName.t * template_spec_info
   | JavaClass of JavaClassName.t
-  | ObjcClass of QualifiedCppName.t
+  | ObjcClass of QualifiedCppName.t * name list
+  (* ObjC class that conforms to a list of protocols,
+     e.g. id<NSFastEnumeration, NSCopying> *)
   | ObjcProtocol of QualifiedCppName.t
 
 and template_arg = TType of t | TInt of Int64.t | TNull | TNullPtr | TOpaque
@@ -135,40 +137,6 @@ val mk_struct : name -> t
 
 val mk_ptr : ?ptr_kind:ptr_kind -> t -> t
 (** make a pointer to [t], default kind is [Pk_pointer] *)
-
-val void : t
-(** void type *)
-
-val java_char : t
-
-val java_byte : t
-
-val java_short : t
-
-val boolean : t
-
-val char : t [@@warning "-32"]
-
-val int : t
-(** signed int type *)
-
-val uint : t
-(** unsigned int type *)
-
-val long : t
-
-val float : t
-
-val double : t
-
-val void_star : t
-(** void* type *)
-
-val pointer_to_java_lang_object : t
-
-val pointer_to_java_lang_string : t
-
-val pointer_to_objc_nszone : t
 
 val get_ikind_opt : t -> ikind option
 (** Get ikind if the type is integer. *)
@@ -241,16 +209,6 @@ module Name : sig
 
     val is_anonymous_inner_class_name_opt : t -> bool option
     (** return None if it is not a Java class *)
-
-    val java_lang_object : t
-
-    val java_io_serializable : t
-
-    val java_lang_cloneable : t
-
-    val java_lang_class : t
-
-    val java_lang_string : t
   end
 
   module Cpp : sig
@@ -268,8 +226,6 @@ module Name : sig
     val from_qual_name : QualifiedCppName.t -> t
 
     val protocol_from_qual_name : QualifiedCppName.t -> t
-
-    val objc_ns_enumerator : t
   end
 
   module Set : PrettyPrintable.PPSet with type elt = t
@@ -297,10 +253,17 @@ val pp_full : Pp.env -> F.formatter -> t -> unit
 val pp : Pp.env -> F.formatter -> t -> unit
 (** Pretty print a type. *)
 
+val pp_desc : Pp.env -> F.formatter -> desc -> unit
+(** Pretty print a type desc. *)
+
 val pp_java : verbose:bool -> F.formatter -> t -> unit
 (** Pretty print a Java type. Raises if type isn't produced by the Java frontend *)
 
+val pp_protocols : Pp.env -> F.formatter -> name list -> unit
+
 val to_string : t -> string
+
+val desc_to_string : desc -> string
 
 val d_full : t -> unit
 (** Dump a type with all the details. *)
@@ -355,7 +318,5 @@ val is_java_type : t -> bool
 val has_block_prefix : string -> bool
 
 val unsome : string -> t option -> t
-
-type typ = t
 
 module Normalizer : HashNormalizer.S with type t = t

@@ -117,9 +117,9 @@ type find_canonical_duplicate = Procdesc.Node.t -> Procdesc.Node.t
 type checks = {eradicate: bool; check_ret_type: check_return_type list}
 
 (** Typecheck an expression. *)
-let rec typecheck_expr ({IntraproceduralAnalysis.tenv; _} as analysis_data) ~nullsafe_mode
-    find_canonical_duplicate visited checks node instr_ref typestate e tr_default loc :
-    TypeState.range =
+let rec typecheck_expr ({IntraproceduralAnalysis.tenv; proc_desc= curr_proc_desc} as analysis_data)
+    ~nullsafe_mode find_canonical_duplicate visited checks node instr_ref typestate e tr_default loc
+    : TypeState.range =
   L.d_with_indent ~name:"typecheck_expr" ~pp_result:TypeState.pp_range (fun () ->
       L.d_printfln "Expr: %a" Exp.pp e ;
       match e with
@@ -161,8 +161,14 @@ let rec typecheck_expr ({IntraproceduralAnalysis.tenv; _} as analysis_data) ~nul
               loc
           in
           let object_origin = InferredNullability.get_simple_origin inferred_nullability in
+          let curr_procname =
+            Procdesc.get_proc_name curr_proc_desc
+            |> Procname.as_java_exn
+                 ~explanation:"typecheck_expr: attempt to typecheck non-Java method"
+          in
+          let class_under_analysis = Procname.Java.get_class_type_name curr_procname in
           let tr_new =
-            match AnnotatedField.get tenv field_name typ with
+            match AnnotatedField.get tenv field_name ~class_typ:typ ~class_under_analysis with
             | Some AnnotatedField.{annotated_type= field_type} ->
                 ( field_type.typ
                 , InferredNullability.create
@@ -252,12 +258,13 @@ let funcall_exp_to_original_pvar_exp tenv curr_pname typestate exp ~is_assignmen
       exp
 
 
-let add_field_to_typestate_if_absent tenv access_loc typestate pvar object_origin field_name typ =
+let add_field_to_typestate_if_absent tenv access_loc typestate pvar object_origin field_name
+    ~field_class_typ ~class_under_analysis =
   match TypeState.lookup_pvar pvar typestate with
   | Some _ ->
       typestate
   | None -> (
-    match AnnotatedField.get tenv field_name typ with
+    match AnnotatedField.get tenv field_name ~class_typ:field_class_typ ~class_under_analysis with
     | Some AnnotatedField.{annotated_type= field_type} ->
         let range =
           ( field_type.typ
@@ -303,7 +310,7 @@ let convert_complex_exp_to_pvar_and_register_field_in_typestate tenv idenv curr_
               default )
       | Exp.Lvar _ ->
           default
-      | Exp.Lfield (exp_, fn, typ) ->
+      | Exp.Lfield (exp_, fn, field_class_typ) ->
           let inner_origin =
             ( match exp_ with
             | Exp.Lvar pvar ->
@@ -330,13 +337,19 @@ let convert_complex_exp_to_pvar_and_register_field_in_typestate tenv idenv curr_
           let pvar_to_str pvar =
             if Exp.is_this (Exp.Lvar pvar) then "" else Pvar.to_string pvar ^ "_"
           in
+          let class_under_analysis =
+            Procname.Java.get_class_type_name
+              (Procname.as_java_exn curr_pname
+                 ~explanation:"Attempt to typecheck non-Java procname")
+          in
           let res =
             match exp' with
             | Exp.Lvar pv when is_parameter_field pv || is_static_field pv ->
                 let fld_name = pvar_to_str pv ^ Fieldname.to_string fn in
                 let pvar = Pvar.mk (Mangled.from_string fld_name) curr_pname in
                 let typestate' =
-                  add_field_to_typestate_if_absent tenv loc typestate pvar inner_origin fn typ
+                  add_field_to_typestate_if_absent tenv loc typestate pvar inner_origin fn
+                    ~field_class_typ ~class_under_analysis
                 in
                 (Exp.Lvar pvar, typestate')
             | Exp.Lfield (_exp', fn', _) when Fieldname.is_java_outer_instance fn' ->
@@ -344,7 +357,8 @@ let convert_complex_exp_to_pvar_and_register_field_in_typestate tenv idenv curr_
                 let fld_name = Fieldname.to_string fn' ^ "_" ^ Fieldname.to_string fn in
                 let pvar = Pvar.mk (Mangled.from_string fld_name) curr_pname in
                 let typestate' =
-                  add_field_to_typestate_if_absent tenv loc typestate pvar inner_origin fn typ
+                  add_field_to_typestate_if_absent tenv loc typestate pvar inner_origin fn
+                    ~field_class_typ ~class_under_analysis
                 in
                 (Exp.Lvar pvar, typestate')
             | Exp.Lvar _ | Exp.Lfield _ -> (
@@ -353,7 +367,8 @@ let convert_complex_exp_to_pvar_and_register_field_in_typestate tenv idenv curr_
               | Some exp_str ->
                   let pvar = Pvar.mk (Mangled.from_string exp_str) curr_pname in
                   let typestate' =
-                    add_field_to_typestate_if_absent tenv loc typestate pvar inner_origin fn typ
+                    add_field_to_typestate_if_absent tenv loc typestate pvar inner_origin fn
+                      ~field_class_typ ~class_under_analysis
                   in
                   (Exp.Lvar pvar, typestate')
               | None ->
@@ -479,7 +494,7 @@ let typecheck_expr_for_errors analysis_data ~nullsafe_mode find_canonical_duplic
     checks node instr_ref typestate1 exp1 loc1 : unit =
   ignore
     (typecheck_expr_simple analysis_data ~nullsafe_mode find_canonical_duplicate calls_this checks
-       node instr_ref typestate1 exp1 Typ.void TypeOrigin.OptimisticFallback loc1)
+       node instr_ref typestate1 exp1 StdTyp.void TypeOrigin.OptimisticFallback loc1)
 
 
 (** Get the values of a vararg parameter given the pvar used to assign the elements by looking for
@@ -634,7 +649,7 @@ let do_preconditions_check_state instr_ref idenv tenv curr_pname curr_annotated_
       typestate'
 
 
-let object_typ = Typ.(mk_ptr (mk_struct Name.Java.java_lang_object))
+let object_typ = StdTyp.Java.pointer_to_java_lang_object
 
 (* Handle m.put(k,v) as assignment pvar = v for the pvar associated to m.get(k) *)
 let do_map_put ({IntraproceduralAnalysis.proc_desc= curr_pdesc; tenv; _} as analysis_data)
@@ -838,7 +853,9 @@ let rec check_condition_for_sil_prune
     | Some expr_str ->
         (* Add pvar representing call to `get` to a typestate, indicating that it is a non-nullable *)
         let pvar = Pvar.mk (Mangled.from_string expr_str) curr_pname in
-        let range = (Typ.void, InferredNullability.create TypeOrigin.CallToGetKnownToContainsKey) in
+        let range =
+          (StdTyp.void, InferredNullability.create TypeOrigin.CallToGetKnownToContainsKey)
+        in
         let typestate_with_new_pvar = TypeState.add pvar range typestate in
         typestate_with_new_pvar
           ~descr:"modelling result of Map.get() since containsKey() returned true"
@@ -881,8 +898,8 @@ let rec check_condition_for_sil_prune
       *)
       let typ, inferred_nullability =
         typecheck_expr_simple analysis_data ~nullsafe_mode find_canonical_duplicate calls_this
-          checks original_node instr_ref typestate pvar_expr Typ.void TypeOrigin.OptimisticFallback
-          loc
+          checks original_node instr_ref typestate pvar_expr StdTyp.void
+          TypeOrigin.OptimisticFallback loc
       in
       if checks.eradicate then
         EradicateChecks.check_condition_for_redundancy analysis_data ~is_always_true:true_branch
@@ -1230,16 +1247,23 @@ let typecheck_instr ({IntraproceduralAnalysis.proc_desc= curr_pdesc; tenv; _} as
       let check_field_assign () =
         match e1 with
         | Exp.Lfield (_, field_name, field_class_type) -> (
-          match AnnotatedField.get tenv field_name field_class_type with
-          | Some annotated_field ->
-              if checks.eradicate then
-                EradicateChecks.check_field_assignment analysis_data ~nullsafe_mode
-                  find_canonical_duplicate node instr_ref typestate ~expr_rhs:e2 ~field_type:typ loc
-                  field_name annotated_field
-                  (typecheck_expr analysis_data ~nullsafe_mode find_canonical_duplicate calls_this
-                     checks)
-          | None ->
-              L.d_strln "WARNING: could not fetch field declaration; skipping assignment check" )
+            let class_under_analysis =
+              Procname.Java.get_class_type_name
+                (Procname.as_java_exn curr_pname
+                   ~explanation:"Attempt to typecheck non-Java method")
+            in
+            match
+              AnnotatedField.get tenv field_name ~class_typ:field_class_type ~class_under_analysis
+            with
+            | Some annotated_field ->
+                if checks.eradicate then
+                  EradicateChecks.check_field_assignment analysis_data ~nullsafe_mode
+                    find_canonical_duplicate node instr_ref typestate ~expr_rhs:e2 ~field_type:typ
+                    loc field_name annotated_field
+                    (typecheck_expr analysis_data ~nullsafe_mode find_canonical_duplicate calls_this
+                       checks)
+            | None ->
+                L.d_strln "WARNING: could not fetch field declaration; skipping assignment check" )
         | _ ->
             ()
       in
